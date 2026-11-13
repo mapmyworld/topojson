@@ -1,0 +1,297 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TopoJSON Playground</title>
+  
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@3.2.1/dist/maplibre-gl.css" />
+  <script src="https://unpkg.com/maplibre-gl@3.2.1/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+  <script src="https://unpkg.com/topojson-server@3.0.1/dist/topojson-server.min.js"></script>
+  <script src="https://unpkg.com/topojson-simplify@3.0.3/dist/topojson-simplify.min.js"></script>
+  <script src="https://unpkg.com/@turf/turf@7.2.0/turf.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+    body { display: flex; flex-direction: column; height: 100vh; background: #0f172a; color: #f8fafc; }
+    
+    header {
+      padding: 1rem 1.5rem;
+      background: #1e293b;
+      border-bottom: 1px solid #334155;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1.5rem;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .controls { display: flex; align-items: center; gap: 1rem; }
+    input[type="range"] { width: 200px; cursor: pointer; }
+    
+    .stats { display: flex; flex-wrap: wrap; gap: 1rem; }
+    .tile-group { display: flex; align-items: stretch; gap: .5rem; padding: .35rem .5rem .35rem .75rem;
+      background: #0f172a; border: 1px solid #334155; border-radius: 8px; }
+    .group-label { writing-mode: vertical-rl; transform: rotate(180deg); font-size: .65rem;
+      text-transform: uppercase; letter-spacing: .08em; color: #94a3b8; }
+    .tile { display: flex; flex-direction: column; min-width: 78px; padding: .35rem .6rem;
+      background: #1e293b; border-radius: 6px; font-variant-numeric: tabular-nums; }
+    .tile small { font-size: .7rem; }
+    .tile strong { font-size: 1.05rem; }
+    .tile em { font-size: .75rem; font-style: normal; color: #94a3b8; }
+    .tile-saved { border: 1px solid #14532d; justify-content: center; }
+    .step { width: 28px; height: 28px; border-radius: 6px; border: 1px solid #334155;
+      background: #0f172a; color: #f8fafc; cursor: pointer; }
+    .step:hover:not(:disabled) { background: #334155; }
+    .step:focus-visible { outline: 2px solid #38bdf8; }
+    .step:disabled { opacity: .4; cursor: default; }
+    .badge-saved { color: #4ade80; font-weight: bold; }
+    .quant { display: flex; align-items: center; gap: .5rem; font-size: .9rem; }
+    .quant select { background: #0f172a; color: #f8fafc; border: 1px solid #334155; border-radius: 6px; padding: .25rem .4rem; }
+    .quant select:disabled { opacity: .4; }
+
+    .maps-container { display: flex; flex: 1; position: relative; }
+    .map-wrapper { flex: 1; position: relative; border-right: 2px solid #334155; }
+    .map-wrapper:last-child { border-right: none; }
+    .map { width: 100%; height: 100%; }
+
+    .map-label {
+      position: absolute; top: 12px; left: 12px; z-index: 10;
+      background: rgba(15, 23, 42, 0.9); padding: 0.5rem 0.85rem;
+      border-radius: 6px; border: 1px solid #475569; font-size: 0.85rem;
+    }
+    .map-label strong { display: block; font-size: 1rem; margin-bottom: 2px; }
+    .geo-title { color: #f87171; }
+    .topo-title { color: #38bdf8; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="controls">
+      <label for="simplifySlider"><strong>Simplification</strong> <span id="simplifyVal">50%</span></label>
+      <button class="step" id="stepDown" aria-label="Decrease simplification" title="Decrease" disabled>◀</button>
+      <input type="range" id="simplifySlider" min="0" max="100" step="1" value="50" disabled />
+      <button class="step" id="stepUp" aria-label="Increase simplification" title="Increase" disabled>▶</button>
+    </div>
+
+    <div class="quant">
+      <label><input type="checkbox" id="quantToggle" checked disabled /> Quantize</label>
+      <select id="quantLevel" aria-label="Quantization grid" disabled>
+        <option value="1e3">1e3</option>
+        <option value="1e4">1e4</option>
+        <option value="1e5">1e5</option>
+        <option value="1e6" selected>1e6</option>
+      </select>
+    </div>
+
+    <div class="stats">
+      <div class="tile-group">
+        <span class="group-label">Source</span>
+        <div class="tile"><small class="geo-title">GeoJSON</small><strong id="srcGeo">-</strong><em id="srcGeoGz">-</em><em id="srcGeoV">-</em></div>
+        <div class="tile"><small class="topo-title">TopoJSON</small><strong id="srcTopo">-</strong><em id="srcTopoGz">-</em><em id="srcTopoV">-</em></div>
+      </div>
+      <div class="tile-group">
+        <span class="group-label">Simplified</span>
+        <div class="tile"><small class="geo-title">GeoJSON</small><strong id="geoSize">-</strong><em id="geoGz">-</em><em id="geoV">-</em></div>
+        <div class="tile"><small class="topo-title">TopoJSON</small><strong id="topoSize">-</strong><em id="topoGz">-</em><em id="topoV">-</em></div>
+      </div>
+      <div class="tile tile-saved"><small>Smaller</small><strong id="savings" class="badge-saved">-</strong><em id="savingsGz">-</em></div>
+    </div>
+  </header>
+
+  <div class="maps-container">
+    <div class="map-wrapper">
+      <div class="map-label">
+        <strong class="geo-title">GeoJSON (Independent Polygons)</strong>
+        <span>Gaps & overlaps appear along borders</span>
+      </div>
+      <div id="mapGeo" class="map"></div>
+    </div>
+
+    <div class="map-wrapper">
+      <div class="map-label">
+        <strong class="topo-title">TopoJSON (Shared Arcs)</strong>
+        <span>Shared borders stay welded</span>
+      </div>
+      <div id="mapTopo" class="map"></div>
+    </div>
+  </div>
+
+  <script>
+    const PALETTE = ["#3b82f6", "#8b5cf6", "#ec4899", "#f59e0b", "#10b981"];
+    const fmt = (b) => (b / 1024).toFixed(1) + " KB";
+    const size = (o) => new Blob([typeof o === "string" ? o : JSON.stringify(o)]).size;
+    const $ = (id) => document.getElementById(id);
+    const fmtV = (n) => n.toLocaleString() + " pts";
+    const countCoords = (c) => (typeof c[0] === "number" ? 1 : c.reduce((s, x) => s + countCoords(x), 0));
+    const geoVertices = (fc) => fc.features.reduce((s, f) => s + countCoords(f.geometry.coordinates), 0);
+    const topoVertices = (t) => t.arcs.reduce((s, a) => s + a.length, 0);
+
+    async function gzipSize(o) {
+      const body = new Blob([typeof o === "string" ? o : JSON.stringify(o)]).stream().pipeThrough(new CompressionStream("gzip"));
+      return (await new Response(body).arrayBuffer()).byteLength;
+    }
+    const roundCoords = (c, k) => (typeof c[0] === "number" ? c.map((v) => Math.round(v * k) / k) : c.map((x) => roundCoords(x, k)));
+
+    // Base map style and controls borrowed from the mymap (MMW) template.
+    const MMW_STYLE = {
+      id: "MMW", version: 8, name: "Map My World",
+      sources: {
+        "bas-tiles": {
+          type: "raster", tileSize: 256, minzoom: 1,
+          tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+          attribution: '© Tiles <a href="https://openstreetmap.org">OpenStreetMap</a>'
+        }
+      },
+      layers: [{ id: "basic-layer", type: "raster", source: "bas-tiles" }]
+    };
+
+    function createMap(container) {
+      const map = new maplibregl.Map({
+        container, style: MMW_STYLE, center: [-96, 38.5], zoom: 3.6,
+        pitch: 0, bearing: 0, antialias: true, maxPitch: 85
+      });
+      map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-left");
+      map.addControl(new maplibregl.NavigationControl({ visualizePitch: true, showZoom: false }), "bottom-left");
+      return new Promise((resolve) => map.on("load", () => resolve(map)));
+    }
+
+    function colorize(fc) {
+      fc.features.forEach((f, i) => { f.properties = { ...f.properties, color: PALETTE[i % PALETTE.length] }; });
+      return fc;
+    }
+
+    function addLayers(map, id, data, lineColor) {
+      map.addSource(id, { type: "geojson", data });
+      map.addLayer({ id: id + "-fill", type: "fill", source: id,
+        paint: { "fill-color": ["get", "color"], "fill-opacity": 0.55 } });
+      map.addLayer({ id: id + "-line", type: "line", source: id,
+        paint: { "line-color": lineColor, "line-width": 1 } });
+    }
+
+    let isSyncing = false;
+    function syncMaps(a, b) {
+      a.on("move", () => {
+        if (isSyncing) return;
+        isSyncing = true;
+        b.jumpTo({ center: a.getCenter(), zoom: a.getZoom(), bearing: a.getBearing(), pitch: a.getPitch() });
+        isSyncing = false;
+      });
+    }
+
+    async function init() {
+      const [geoRes, topoRes] = await Promise.all([fetch("./us.geo.json"), fetch("./us.topo.json")]);
+      const geoText = JSON.stringify(JSON.parse(await geoRes.text()));
+      const topoText = JSON.stringify(JSON.parse(await topoRes.text()));
+      const rawGeo = JSON.parse(geoText);
+      const baseGeo = colorize(JSON.parse(geoText));
+      const baseTopo = JSON.parse(topoText);
+      const objectName = Object.keys(baseTopo.objects)[0];
+      const presimplified = topojson.presimplify(baseTopo);
+
+      // One topology per feature, so the same Visvalingam weights apply without shared arcs.
+      const perFeature = rawGeo.features.map((f) => {
+        const t = topojson.topology({ f });
+        return topojson.presimplify(t);
+      });
+      const simplifyGeo = (w) => ({
+        type: "FeatureCollection",
+        features: perFeature.map((p) => {
+          const s = topojson.simplify(p, w);
+          return topojson.feature(s, s.objects.f);
+        })
+      });
+
+      $("srcGeo").textContent = fmt(size(geoText));
+      $("srcTopo").textContent = fmt(size(topoText));
+      $("srcGeoV").textContent = fmtV(geoVertices(baseGeo));
+      $("srcTopoV").textContent = fmtV(topoVertices(baseTopo));
+      gzipSize(geoText).then((n) => { $("srcGeoGz").textContent = fmt(n) + " gz"; });
+      gzipSize(topoText).then((n) => { $("srcTopoGz").textContent = fmt(n) + " gz"; });
+
+      const [mapGeo, mapTopo] = await Promise.all([createMap("mapGeo"), createMap("mapTopo")]);
+
+      const decode = (topo) => colorize(topojson.feature(topo, topo.objects[objectName]));
+      addLayers(mapGeo, "geo-src", baseGeo, "#f87171");
+      addLayers(mapTopo, "topo-src", decode(baseTopo), "#38bdf8");
+
+      syncMaps(mapGeo, mapTopo);
+      syncMaps(mapTopo, mapGeo);
+
+      let current = 50;
+      let run = 0;
+      function update(pct) {
+        current = pct;
+        $("simplifyVal").textContent = pct + "%";
+        const t = pct / 100;
+        const quantOn = $("quantToggle").checked;
+        const q = Number($("quantLevel").value);
+
+        const weight = Math.pow(t, 2.5) * 0.3;
+
+        // Same weight on both sides; GeoJSON simplifies each polygon alone, so shared borders diverge.
+        // At 0% unquantized the source is already the answer; rebuilding it would change its size.
+        const geo = pct === 0 && !quantOn ? rawGeo : simplifyGeo(weight);
+        if (quantOn) {
+          // A q-step grid over ~100 degrees of extent is roughly 10^(log10(q)-1) decimals.
+          const k = Math.pow(10, Math.max(0, Math.round(Math.log10(q)) - 1));
+          geo.features.forEach((f) => { f.geometry.coordinates = roundCoords(f.geometry.coordinates, k); });
+        }
+
+        // TopoJSON simplifies each shared arc once, so neighbours stay identical.
+        let topo = topojson.simplify(presimplified, weight);
+        if (quantOn) topo = topojson.quantize(topo, q);
+
+        // Metrics use the plain geo; the display copy carries the fill color.
+        const shown = { ...geo, features: geo.features.map((f, i) => ({ ...f, properties: { ...f.properties, color: PALETTE[i % PALETTE.length] } })) };
+        mapGeo.getSource("geo-src").setData(shown);
+        mapTopo.getSource("topo-src").setData(decode(topo));
+
+        const geoBytes = size(geo);
+        const topoBytes = size(topo);
+        $("geoSize").textContent = fmt(geoBytes);
+        $("topoSize").textContent = fmt(topoBytes);
+        $("geoV").textContent = fmtV(geoVertices(geo));
+        $("topoV").textContent = fmtV(topoVertices(topo));
+        $("savings").textContent = (100 * (geoBytes - topoBytes) / geoBytes).toFixed(1) + "%";
+
+        const id = ++run;
+        Promise.all([gzipSize(geo), gzipSize(topo)]).then(([g, tp]) => {
+          if (id !== run) return;
+          $("geoGz").textContent = fmt(g) + " gz";
+          $("topoGz").textContent = fmt(tp) + " gz";
+          $("savingsGz").textContent = (100 * (g - tp) / g).toFixed(1) + "% gz";
+        });
+      }
+
+      let pending = null;
+      $("simplifySlider").addEventListener("input", (e) => {
+        const v = Number(e.target.value);
+        if (pending) cancelAnimationFrame(pending);
+        pending = requestAnimationFrame(() => update(v));
+      });
+      const slider = $("simplifySlider");
+      function bindStep(id, dir) {
+        $(id).addEventListener("click", () => {
+          slider.value = Math.min(100, Math.max(0, Number(slider.value) + dir));
+          slider.dispatchEvent(new Event("input"));
+        });
+      }
+      bindStep("stepDown", -1);
+      bindStep("stepUp", 1);
+      slider.disabled = $("stepDown").disabled = $("stepUp").disabled = false;
+      $("quantToggle").disabled = false;
+      $("quantLevel").disabled = false;
+      $("quantToggle").addEventListener("change", (e) => {
+        $("quantLevel").disabled = !e.target.checked;
+        update(current);
+      });
+      $("quantLevel").addEventListener("change", () => update(current));
+      update(50);
+    }
+
+    init();
+  </script>
+</body>
+</html>
